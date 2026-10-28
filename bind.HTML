@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<html lang="zh‑CN">
+
+<head>
+  <meta charset="UTF‑8">
+  <title>批量工具</title>
+  <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <style>
+    * {
+      box-sizing: border-box;
+      font-family: system-ui
+    }
+
+    body {
+      max-width: 1200px;
+      margin: 20px auto;
+      padding: 0 16px;
+    }
+
+    textarea {
+      width: 100%;
+      padding: 10px;
+      font-family: monospace;
+      font-size: 13px;
+    }
+
+    textarea.sk-text {
+      height: 180px;
+    }
+
+    .block {
+      margin: 14px 0;
+      padding: 16px;
+      border: 1px solid #aaa;
+      border-radius: 8px;
+    }
+
+    button {
+      padding: 8px 14px;
+      margin: 4px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .log {
+      background: #0b0b0b;
+      color: #3f3;
+      padding: 12px;
+      height: 280px;
+      overflow: auto;
+      font-family: monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+
+    .warn {
+      color: red;
+      font-weight: bold;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 7px;
+      font-size: 14px;
+      margin: 4px 0;
+    }
+
+    .row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .col {
+      flex: 1;
+      min-width: 260px;
+    }
+
+    h4 {
+      margin: 6px 0;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>批量操作工具</h2>
+  <!-- <div class="warn">⚠️仅内网测试！禁止真实资产私钥！ -->
+  <!-- <br>CTC买单：USDT买CAA，自动授权USDT；卖单：卖出CAA自动授权CAA；
+<br>功能2仅支持：CAA → V‑Token单向兑换，自动CAA授权；
+<br>数量填代币数字自动转wei；价格填写wei；动态奖励merkle参数填wei！
+</div> -->
+
+  <div class="block">
+    <h3>🌐 RPC 节点设置</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      <input type="text" id="rpcUrl" value="https://bsc-dataseed4.bnbchain.org" placeholder="https://... 或 wss://..."
+        style="width:auto;flex:1;min-width:280px;margin:0;">
+      <button onclick="applyRpc()">🔄 应用 / 重连</button>
+      <button onclick="resetRpc()">↩ 恢复默认</button>
+    </div>
+    <div style="color:#888;font-size:12px;margin-top:6px;">
+      默认：<span id="rpcDefaultShow"></span>｜修改后点「应用/重连」，已解析的钱包会自动绑定新 RPC，不需要重新解析私钥。
+    </div>
+  </div>
+
+  <div class="block">
+    <h3>⛽ Gas 设置</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      <input type="text" id="gasLimit" placeholder="留空=自动 eth_estimateGas；也可手动填数值"
+        style="width:auto;flex:1;min-width:280px;margin:0;">
+      <button onclick="fillGas(300000)">填入 300000</button>
+      <button onclick="fillGas(500000)">填入 500000</button>
+      <button onclick="fillGas('')">清空(自动估算)</button>
+    </div>
+    <div style="color:#888;font-size:12px;margin-top:6px;">
+      <b>留空=自动估算</b>：发送交易时由 ethers.js 调用 <code>eth_estimateGas</code> 估算 gasLimit，
+      并用 <code>provider.getFeeData()</code> 获取 <code>maxFeePerGas</code> / <code>maxPriorityFeePerGas</code> 填入交易。
+      手动填写后所有发交易的函数统一使用该 gasLimit；发送前仍会做余额预检。
+      参考：绑定 makeRelation ≈ 20~25 万；ERC20 approve ≈ 6 万；createOrder ≈ 30 万；harvest ≈ 20 万；takeAward ≈ 20 万。
+    </div>
+  </div>
+
+  <div class="block">
+    <h3>私钥列表（每行1个私钥，支持0x/不带0x）</h3>
+    <textarea class="sk-text" id="skList" placeholder="0x....
+...."></textarea>
+    <div>
+      <button onclick="parseSk()">🔍解析私钥列表</button>
+      <span>解析账户数量：<strong id="accCount">0</strong></span>
+    </div>
+    <div id="parseResult" style="white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
+  </div>
+
+  <div class="row">
+    <div class="block col">
+      <h3>✅原功能1：一绑多（全部账号绑定同一个上级）</h3>
+      <div>上级Parent地址：<input type="text" id="oneToManyParent" placeholder="0x..."></div>
+      <button onclick="runOneToMany()">▶开始【一绑多】绑定</button>
+    </div>
+    <div class="block col">
+      <h3>✅原功能2：串联绑定 A→B→C→D</h3>
+      <div>链式根上级地址：<input type="text" id="chainRootParent" placeholder="根parent地址"></div>
+      <button onclick="runChainBind()">▶开始【串联绑定】</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="block col">
+      <h3>💸 批量转账（出款私钥 → 上方私钥列表地址）</h3>
+    
+      <div style="margin:4px 0;">
+        <label><input type="radio" name="transferType" value="native" checked onchange="onTransferTypeChange()"> 主币
+          (BNB)</label>
+        <label style="margin-left:12px;"><input type="radio" name="transferType" value="token"
+            onchange="onTransferTypeChange()"> 代币 (ERC20)</label>
+      </div>
+    
+      <div id="tokenAddrWrap" style="display:none;">
+        <div>代币合约地址：</div>
+        <input type="text" id="transferTokenAddr" placeholder="0x..." oninput="refreshTransferBalances()">
+      </div>
+    
+      <div style="margin-top:8px;">出款私钥（每行1个，0x/不带0x均可）：</div>
+      <textarea id="transferFromSk" class="sk-text" style="height:90px;" placeholder="0x....
+    ...."></textarea>
+      <div style="margin-top:6px;">
+        <button onclick="refreshTransferBalances()">🔍 查询出款账户余额</button>
+        <button onclick="clearTransferBalances()">清空余额显示</button>
+      </div>
+      <div id="transferBalanceOut"
+        style="white-space:pre-wrap;font-family:monospace;font-size:12px;max-height:160px;overflow:auto;margin:6px 0;">
+      </div>
+    
+      <div>每个出款账号给每个接收地址转出数量：</div>
+      <input type="text" id="transferAmount" placeholder="例如 0.01 或 100">
+    
+      <div style="margin-top:6px;">
+        <button onclick="runBatchTransfer()">▶ 开始批量转账</button>
+      </div>
+    
+      <div style="color:#888;font-size:12px;margin-top:6px;">
+        接收方 = 上方「私钥列表」解析出的 <b id="transferRecvCount">0</b> 个地址。<br>
+        实际交易笔数 = 出款私钥数 × 接收地址数。主币按 18 位，代币按合约 decimals 自动换算。
+      </div>
+    </div>
+  
+    <div class="block col">
+      <h3>🧾 批量生成地址</h3>
+      <div>生成数量：</div>
+      <input type="text" id="genCount" value="10" placeholder="例如 100">
+      <div style="margin-top:8px;">
+        <button onclick="runGenerateWallets()">▶ 生成地址</button>
+        <button onclick="exportWalletsXlsx()">⬇ 导出 xlsx</button>
+        <button onclick="clearGenerated()">🗑 清空</button>
+      </div>
+      <div id="genOut"
+        style="white-space:pre-wrap;font-family:monospace;font-size:12px;max-height:220px;overflow:auto;margin-top:8px;">
+      </div>
+      <div style="color:#888;font-size:12px;margin-top:6px;">
+        ⚠️ 私钥仅在本页内存中生成与展示，刷新即丢失，请立即导出并妥善离线保存。
+      </div>
+    </div>
+  </div>
+
+  <!-- <div class="block">
+    <h3>🔹功能1：批量CTC订单簿挂单 Market.createOrder</h3>
+    ...
+</div> -->
+
+  <!-- <div class="block">
+    <h3>🔹功能2：批量 CAA → V‑Token 单向兑换(VExchange)</h3>
+    ...
+</div> -->
+
+  <!-- <div class="row">
+<div class="block col">
+    <h3>🔹功能3‑A：批量查询【静态奖励】StaticPool.earn()</h3>
+    ...
+</div>
+<div class="block col">
+    <h3>🔹功能3‑B：批量领取【静态奖励】StaticPool.harvest()</h3>
+    ...
+</div>
+</div> -->
+
+  <!-- <div class="block">
+    <h3>🔹功能3‑C：领取【动态奖励】DynamicPool.takeAward（merkle证明）</h3>
+    ...
+</div> -->
+
+  <div class="block">
+    <h3>运行日志</h3>
+    <div class="log" id="logBox"></div>
+    <button onclick="clearLog()">🗑清空日志</button>
+  </div>
+
+  <script>
+    // ====================== 【配置区 全部合约地址】 ======================
+    const DEFAULT_RPC_URL = "https://bsc-dataseed4.bnbchain.org";
+    const ADDR = {
+      Balancer: "0xd84dA80c18A046036a35c99a807bAE27C5FD25e0",
+      DynamicPool: "0x999742508119B501a44b37Fd6631783457b0287c",
+      Family: "0x8Dc484E42EA677938A4C9c37cdF11D4bbF464399",
+      FeeRobot: "0xBC59D9f4c01Ad265a189f95F2b8A478696184777",
+      Market: "0x03f7d5709C34a7972bF18E0be478CA2DbdAE246e",
+      MarketValue: "0xc0c18A71Af408Ea387DeD31F9AE43f9399a300de",
+      Multicall3: "0x39695f8713ad9c45c63faf1e99ccaa3fdcf02a4f",
+      National: "0x49f9652362B373fDd74Ab5F65080686A59E65d12",
+      PermissionAdmin: "0x6687895D1b77A9E593a3CbC54387C79A9c9974e8",
+      StaticPool: "0x4627D0C910D2c7Fe92e652c49Fc938cFF4A485F2",
+      Token: "0xb54cbbb64dd8504d74361e1e4baf305e8498c5c9",
+      UniswapV2Router02: "0x52e0611c30fa9af8bf0760327f2ebeb810f0a0b7",
+      USDT_TOKEN: "0x55d398326f99059fF775485246999027B3197955",
+      VExchange: "0x72206280F7E98D525D84dba9866Be5B79D08eB8C",
+      WETH9: "0x6cd3fb31dc81c466332f6956117cf6ffeba0e325",
+      CAA_TOKEN: "0xb54cbbb64dd8504d74361e1e4baf305e8498c5c9",
+      V_TOKEN: "0x8142FE663fE28E7aEd9B859C0475C8ef7F3C5539",
+    };
+
+    // Family ABI
+    const ABI_Family = [
+      { "inputs": [], "name": "bindFee", "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [{ "internalType": "address", "name": "parentAddr", "type": "address" }], "name": "makeRelation", "outputs": [], "stateMutability": "payable", "type": "function" }
+    ];
+
+    // Market CTC订单簿 ABI（保留完整）
+    const ABI_Market = [
+      { "anonymous": false, "inputs": [{ "indexed": false, "internalType": "address", "name": "previousAdmin", "type": "address" }, { "indexed": false, "internalType": "address", "name": "newAdmin", "type": "address" }], "name": "AdminChanged", "type": "event" },
+      { "anonymous": false, "inputs": [{ "indexed": true, "internalType": "address", "name": "beacon", "type": "address" }], "name": "BeaconUpgraded", "type": "event" },
+      { "anonymous": false, "inputs": [{ "indexed": true, "internalType": "uint256", "name": "orderId", "type": "uint256" }, { "indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256" }], "name": "CancelOrder", "type": "event" },
+      { "anonymous": false, "inputs": [{ "indexed": false, "internalType": "uint8", "name": "version", "type": "uint8" }], "name": "Initialized", "type": "event" },
+      { "anonymous": false, "inputs": [{ "indexed": true, "internalType": "uint256", "name": "orderId", "type": "uint256" }, { "indexed": true, "internalType": "address", "name": "maker", "type": "address" }, { "indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256" }, { "indexed": false, "internalType": "uint256", "name": "price", "type": "uint256" }, { "indexed": false, "internalType": "bool", "name": "isBuy", "type": "bool" }], "name": "OrderCreated", "type": "event" },
+      { "anonymous": false, "inputs": [{ "indexed": true, "internalType": "uint256", "name": "orderId", "type": "uint256" }, { "indexed": true, "internalType": "address", "name": "opterator", "type": "address" }, { "indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256" }, { "indexed": false, "internalType": "uint256", "name": "price", "type": "uint256" }, { "indexed": false, "internalType": "bool", "name": "isBuy", "type": "bool" }], "name": "Trading", "type": "event" },
+      { "anonymous": false, "inputs": [{ "indexed": true, "internalType": "address", "name": "implementation", "type": "address" }], "name": "Upgraded", "type": "event" },
+      { "inputs": [{ "internalType": "address", "name": "account", "type": "address" }], "name": "addGuarded", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [], "name": "balancer", "outputs": [{ "internalType": "address", "name": "", "type": "address" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [], "name": "balancerFeeRate", "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [], "name": "burnRate", "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [{ "internalType": "uint256", "name": "orderId", "type": "uint256" }], "name": "cancelOrder", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [], "name": "communityFeeRate", "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [], "name": "communityReceiver", "outputs": [{ "internalType": "address", "name": "", "type": "address" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [{ "internalType": "uint256", "name": "amount", "type": "uint256" }, { "internalType": "uint256", "name": "price", "type": "uint256" }, { "internalType": "bool", "name": "isBuy", "type": "bool" }], "name": "createOrder", "outputs": [], "stateMutability": "payable", "type": "function" },
+      { "inputs": [], "name": "currentOrderId", "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [{ "internalType": "bytes32", "name": "role", "type": "bytes32" }, { "internalType": "address", "name": "account", "type": "address" }], "name": "hasRole", "outputs": [{ "internalType": "bool", "name": "", "type": "bool" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [{ "internalType": "address", "name": "_permissionAdmin", "type": "address" }, { "internalType": "address", "name": "_token", "type": "address" }, { "internalType": "address", "name": "_usdt", "type": "address" }, { "internalType": "address", "name": "_national", "type": "address" }, { "internalType": "address", "name": "_protocolReceiver", "type": "address" }, { "internalType": "address", "name": "_communityReceiver", "type": "address" }], "name": "initialize", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [{ "internalType": "address", "name": "", "type": "address" }], "name": "isGuardedOf", "outputs": [{ "internalType": "bool", "name": "", "type": "bool" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [], "name": "national", "outputs": [{ "internalType": "address", "name": "", "type": "address" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }], "name": "orderOf", "outputs": [{ "internalType": "address", "name": "maker", "type": "address" }, { "internalType": "uint256", "name": "tokenAmount", "type": "uint256" }, { "internalType": "uint256", "name": "initAmount", "type": "uint256" }, { "internalType": "uint256", "name": "price", "type": "uint256" }, { "internalType": "bool", "name": "isBuy", "type": "bool" }, { "internalType": "bool", "name": "isCancel", "type": "bool" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [], "name": "protocolAmount", "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [], "name": "protocolReceiver", "outputs": [{ "internalType": "address", "name": "", "type": "address" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [], "name": "proxiableUUID", "outputs": [{ "internalType": "bytes32", "name": "", "type": "bytes32" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [{ "internalType": "address", "name": "account", "type": "address" }], "name": "removeGuarded", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [{ "internalType": "address", "name": "_balancer", "type": "address" }], "name": "setBalancer", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [{ "internalType": "uint256", "name": "_balancerFeeRate", "type": "uint256" }, { "internalType": "uint256", "name": "_communityFeeRate", "type": "uint256" }], "name": "setBalancerAndCommunityFeeRate", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [{ "internalType": "uint256", "name": "_burnRate", "type": "uint256" }], "name": "setBurnRate", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [{ "internalType": "address", "name": "_communityReceiver", "type": "address" }], "name": "setCommunityReceiver", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [{ "internalType": "uint256", "name": "_protocolAmount", "type": "uint256" }], "name": "setProtocolAmount", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [{ "internalType": "address", "name": "_protocolReceiver", "type": "address" }], "name": "setProtocolReceiver", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [], "name": "token", "outputs": [{ "internalType": "address", "name": "", "type": "address" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [{ "internalType": "uint256", "name": "orderId", "type": "uint256" }, { "internalType": "uint256", "name": "amount", "type": "uint256" }], "name": "trading", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [{ "internalType": "address", "name": "newImplementation", "type": "address" }], "name": "upgradeTo", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [{ "internalType": "address", "name": "newImplementation", "type": "address" }, { "internalType": "bytes", "name": "data", "type": "bytes" }], "name": "upgradeToAndCall", "outputs": [], "stateMutability": "payable", "type": "function" },
+      { "inputs": [], "name": "usdt", "outputs": [{ "internalType": "address", "name": "", "type": "address" }], "stateMutability": "view", "type": "function" }
+    ];
+
+    // VExchange ABI（保留完整）
+    const ABI_VExchange = [
+      { "anonymous": false, "inputs": [{ "indexed": false, "internalType": "address", "name": "previousAdmin", "type": "address" }, { "indexed": false, "internalType": "address", "name": "newAdmin", "type": "address" }], "name": "AdminChanged", "type": "event" },
+      { "anonymous": false, "inputs": [{ "indexed": true, "internalType": "address", "name": "beacon", "type": "address" }], "name": "BeaconUpgraded", "type": "event" },
+      { "anonymous": false, "inputs": [{ "indexed": false, "internalType": "uint8", "name": "version", "type": "uint8" }], "name": "Initialized", "type": "event" },
+      { "anonymous": false, "inputs": [{ "indexed": false, "internalType": "address", "name": "", "type": "address" }, { "indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256" }], "name": "SwapToken", "type": "event" },
+      { "anonymous": false, "inputs": [{ "indexed": false, "internalType": "address", "name": "account", "type": "address" }, { "indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256" }], "name": "SwapVtoken", "type": "event" },
+      { "anonymous": false, "inputs": [{ "indexed": true, "internalType": "address", "name": "implementation", "type": "address" }], "name": "Upgraded", "type": "event" },
+      { "inputs": [], "name": "balancer", "outputs": [{ "internalType": "address", "name": "", "type": "address" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [], "name": "balancerFeeRate", "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [{ "internalType": "bytes32", "name": "role", "type": "bytes32" }, { "internalType": "address", "name": "account", "type": "address" }], "name": "hasRole", "outputs": [{ "internalType": "bool", "name": "", "type": "bool" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [{ "internalType": "address", "name": "_permissionAdmin", "type": "address" }, { "internalType": "address", "name": "_token", "type": "address" }, { "internalType": "address", "name": "_vToken", "type": "address" }, { "internalType": "address", "name": "_national", "type": "address" }, { "internalType": "address", "name": "_balancer", "type": "address" }, { "internalType": "address", "name": "_staticPool", "type": "address" }, { "internalType": "address", "name": "_operatorRevicer", "type": "address" }], "name": "initialize", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [], "name": "national", "outputs": [{ "internalType": "address", "name": "", "type": "address" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [], "name": "operatorFeeRate", "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [], "name": "operatorRevicer", "outputs": [{ "internalType": "address", "name": "", "type": "address" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [], "name": "proxiableUUID", "outputs": [{ "internalType": "bytes32", "name": "", "type": "bytes32" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [{ "internalType": "uint256", "name": "_balancerFeeRate", "type": "uint256" }, { "internalType": "uint256", "name": "_operatorFeeRate", "type": "uint256" }], "name": "setFeeRate", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [{ "internalType": "address", "name": "revicer", "type": "address" }], "name": "setOperatorFeeRate", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [], "name": "staticPool", "outputs": [{ "internalType": "address", "name": "", "type": "address" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [{ "internalType": "uint256", "name": "amount", "type": "uint256" }], "name": "swapToken", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [{ "internalType": "uint256", "name": "amount", "type": "uint256" }], "name": "swapVtoken", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [], "name": "token", "outputs": [{ "internalType": "address", "name": "", "type": "address" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [{ "internalType": "address", "name": "newImplementation", "type": "address" }], "name": "upgradeTo", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
+      { "inputs": [{ "internalType": "address", "name": "newImplementation", "type": "address" }, { "internalType": "bytes", "name": "data", "type": "bytes" }], "name": "upgradeToAndCall", "outputs": [], "stateMutability": "payable", "type": "function" },
+      { "inputs": [], "name": "vToken", "outputs": [{ "internalType": "address", "name": "", "type": "address" }], "stateMutability": "view", "type": "function" }
+    ];
+
+    const ABI_StaticPool = [
+      { "inputs": [{ "internalType": "address", "name": "account", "type": "address" }], "name": "earn", "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }], "stateMutability": "view", "type": "function" },
+      { "inputs": [], "name": "harvest", "outputs": [], "stateMutability": "nonpayable", "type": "function" }
+    ];
+
+    const ABI_DynamicPool = [
+      { "inputs": [{ "internalType": "bytes32[]", "name": "proof", "type": "bytes32[]" }, { "internalType": "uint256", "name": "totalReward", "type": "uint256" }, { "internalType": "uint256", "name": "useCycle", "type": "uint256" }], "name": "takeAward", "outputs": [], "stateMutability": "nonpayable", "type": "function" }
+    ];
+
+    const ABI_ERC20_MIN = [
+      { "inputs": [{ "internalType": "address", "name": "spender", "type": "address" }, { "internalType": "uint256", "name": "amount", "type": "uint256" }], "name": "approve", "outputs": [{ "internalType": "bool", "name": "", "type": "bool" }], "stateMutability": "nonpayable", "type": "function" }
+    ];
+
+    let provider = null;
+    let currentRpcUrl = "";
+    let familyContract;
+    let marketContract;
+    let vExchangeContract;
+    let staticPoolContract;
+    let dynamicPoolContract;
+    let caaTokenContract;
+    let usdtTokenContract;
+    let parsedWallets = [];
+    let parsedPrivateKeys = [];
+
+    // ========== RPC 相关 ==========
+    function getRpcInput() {
+      const el = document.getElementById("rpcUrl");
+      const v = (el && el.value ? el.value : "").trim();
+      return v || DEFAULT_RPC_URL;
+    }
+
+    function withTimeout(p, ms) {
+      return Promise.race([
+        p,
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`${ms}ms 超时`)), ms))
+      ]);
+    }
+
+    async function initProvider(forceReconnect) {
+      const url = getRpcInput();
+      if (provider && currentRpcUrl === url && !forceReconnect) return;
+
+      const hadProvider = !!provider;
+      currentRpcUrl = url;
+
+      provider = new ethers.providers.JsonRpcProvider(currentRpcUrl);
+      familyContract = new ethers.Contract(ADDR.Family, ABI_Family, provider);
+      marketContract = new ethers.Contract(ADDR.Market, ABI_Market, provider);
+      vExchangeContract = new ethers.Contract(ADDR.VExchange, ABI_VExchange, provider);
+      staticPoolContract = new ethers.Contract(ADDR.StaticPool, ABI_StaticPool, provider);
+      dynamicPoolContract = new ethers.Contract(ADDR.DynamicPool, ABI_DynamicPool, provider);
+      caaTokenContract = new ethers.Contract(ADDR.CAA_TOKEN, ABI_ERC20_MIN, provider);
+      usdtTokenContract = new ethers.Contract(ADDR.USDT_TOKEN, ABI_ERC20_MIN, provider);
+
+
+      try {
+        const net = await withTimeout(provider.getNetwork(), 8000);
+        log(`✅RPC已连接 ${currentRpcUrl} (chainId=${net.chainId})`);
+      } catch (e) {
+        log(`⚠️RPC连接异常 ${currentRpcUrl} ：${e.message}`);
+      }
+
+      if (hadProvider && parsedPrivateKeys.length) {
+        parsedWallets = parsedPrivateKeys.map(sk => new ethers.Wallet(sk, provider));
+        renderParsedList();
+        log(`🔄RPC已切换，已重新绑定 ${parsedWallets.length} 个钱包`);
+      }
+
+      try {
+        const bf = await familyContract.bindFee();
+        log(`ℹ️Family bindFee(wei)=${bf.toString()}`);
+      } catch (e) { log(`⚠️读取bindFee失败 ${e.message}`); }
+
+      // try {
+      //   const marketFee = await marketContract.protocolAmount();
+      //   log(`ℹ️Market挂单费protocolAmount(wei)=${marketFee.toString()}`);
+      // } catch (e) { log(`⚠️读取Market挂单费失败 ${e.message}`); }
+    }
+
+    async function applyRpc() { await initProvider(true); }
+    async function resetRpc() {
+      document.getElementById("rpcUrl").value = DEFAULT_RPC_URL;
+      await initProvider(true);
+    }
+
+    // ========== Gas / Fee 相关 ==========
+    // 构建交易 overrides：
+    // 1) 若手动填了 Gas Limit，则使用该值；留空则由 ethers 调用 eth_estimateGas 自动估算
+    // 2) 显式获取 feeData，填入 maxFeePerGas / maxPriorityFeePerGas（或 gasPrice）
+   async function buildTxOverrides(extra = {}) {
+      const ov = { ...extra };
+      const el = document.getElementById("gasLimit");
+      const v = el && el.value ? el.value.trim() : "";
+      if (v) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n > 0 && Number.isInteger(n)) {
+          ov.gasLimit = n;
+          log(`⛽ 使用手动 Gas Limit=${n}`);
+        } else {
+          log(`⚠️Gas Limit 输入无效：${v}，本次将自动估算`);
+        }
+      } else {
+        log(`⛽ Gas Limit 留空 → 由 ethers 调用 eth_estimateGas 自动估算`);
+      }
+
+      // 修改点：直接使用 eth_gasPrice 获取实时 gas 价格
+      try {
+        const gasPrice = await provider.send("eth_gasPrice", []);
+        const gasPriceBN = ethers.BigNumber.from(gasPrice);
+
+        if (gasPriceBN.gt(0)) {
+          ov.gasPrice = gasPriceBN;
+          log(`⛽ gasPrice=${ethers.utils.formatUnits(gasPriceBN, "gwei")} gwei (来自 eth_gasPrice)`);
+        } else {
+          log(`⛽ eth_gasPrice 返回 0，使用节点默认值`);
+        }
+      } catch (e) {
+        log(`⚠️eth_gasPrice 获取失败（将使用节点默认）：${e.message}`);
+      }
+
+      return ov;
+    }
+    
+    // 发送前余额预检：用 estimateGas 估算 gasLimit，计算 value + gasLimit * fee
+    // 返回 true=可继续，false=余额不足跳过
+    async function precheckBalance(wallet, valueWei, gasOv, estimateFn, label) {
+      try {
+        const bal = await provider.getBalance(wallet.address);
+        let gasLimit;
+        if (gasOv.gasLimit) {
+          gasLimit = ethers.BigNumber.from(gasOv.gasLimit);
+        } else {
+          gasLimit = await estimateFn();
+          log(`🔎${label} 估算 gasLimit=${gasLimit.toString()}`);
+        }
+        const fee = gasOv.maxFeePerGas || gasOv.gasPrice;
+        if (!fee) return true;
+        const v = valueWei || ethers.BigNumber.from(0);
+        const need = v.add(gasLimit.mul(fee));
+        if (bal.lt(need)) {
+          log(`⚠️${label} 余额不足：余额=${ethers.utils.formatEther(bal)} BNB，` +
+            `预计需要=${ethers.utils.formatEther(need)} BNB` +
+            `（value=${ethers.utils.formatEther(v)} + gas=${gasLimit.toString()}×${ethers.utils.formatUnits(fee, "gwei")}gwei），` +
+            `差额=${ethers.utils.formatEther(need.sub(bal))} BNB，已跳过`);
+          return false;
+        }
+        log(`✅${label} 余额预检通过（余额=${ethers.utils.formatEther(bal)} BNB，预计需要≈${ethers.utils.formatEther(need)} BNB）`);
+        return true;
+      } catch (e) {
+        log(`⚠️${label} 余额预检异常（继续尝试发送）：${e.message}`);
+        return true;
+      }
+    }
+
+    function fillGas(v) {
+      document.getElementById("gasLimit").value = v === "" ? "" : String(v);
+    }
+
+    // ========== 解析私钥 ==========
+    function renderParsedList() {
+      document.getElementById("accCount").innerText = parsedWallets.length;
+      const listStr = parsedWallets.map((w, i) => `[${i}] ${w.address}`).join("\n");
+      document.getElementById("parseResult").innerText =
+        parsedWallets.length ? ("解析地址列表:\n" + listStr) : "";
+    }
+
+    async function parseSk() {
+      await initProvider();
+      parsedWallets = [];
+      parsedPrivateKeys = [];
+
+      const text = document.getElementById("skList").value;
+      const lines = text.split('\n').map(i => i.trim()).filter(i => i.length > 0);
+
+      for (const line of lines) {
+        let sk = line;
+        if (!sk.startsWith('0x')) sk = '0x' + sk;
+        try {
+          const w = new ethers.Wallet(sk, provider);
+          parsedWallets.push(w);
+          parsedPrivateKeys.push(sk);
+        } catch (err) {
+          const masked = line.length > 10 ? line.slice(0, 6) + "..." + line.slice(-4) : "***";
+          log(`❌无效私钥:${masked} | ${err.message}`);
+        }
+      }
+
+      renderParsedList();
+      log(`✅解析完成，有效钱包数=${parsedWallets.length}，当前RPC=${currentRpcUrl}`);
+    }
+
+    // ========== 一绑多 ==========
+    async function runOneToMany() {
+      await initProvider();
+      if (parsedWallets.length === 0) { log("❌请先解析私钥"); return; }
+      const parentAddr = document.getElementById("oneToManyParent").value.trim();
+      if (!ethers.utils.isAddress(parentAddr)) { log("❌上级地址格式错误"); return; }
+      let bindFeeWei;
+      try { bindFeeWei = await familyContract.bindFee(); } catch (e) { log(`❌读取bindFee失败 ${e.message}`); return; }
+      const gasOv = await buildTxOverrides();
+
+      log(`====开始一绑多 parent=${parentAddr} bindFee=${bindFeeWei.toString()} gasLimit=${gasOv.gasLimit || '自动估算'} ====`);
+      for (let idx = 0; idx < parsedWallets.length; idx++) {
+        const wallet = parsedWallets[idx];
+        const c = familyContract.connect(wallet);
+        const label = `[${idx}] ${wallet.address}`;
+        const ok = await precheckBalance(
+          wallet,
+          bindFeeWei,
+          gasOv,
+          () => c.estimateGas.makeRelation(parentAddr, { value: bindFeeWei }),
+          label + " makeRelation"
+        );
+        if (!ok) continue;
+        try {
+          log(`${label} → parent ${parentAddr}`);
+          const tx = await c.makeRelation(parentAddr, { value: bindFeeWei, ...gasOv });
+          log(`👉txHash:${tx.hash} 等待确认`);
+          const rcpt = await tx.wait();
+          log(`✅确认 block:${rcpt.blockNumber}`);
+        } catch (e) {
+          log(`❌${label} err:${e.message}`);
+          try {
+            await c.callStatic.makeRelation(parentAddr, { value: bindFeeWei });
+          } catch (se) {
+            log(`🔍静态调用 revert 原因: ${se.reason || se.error?.reason || se.message}`);
+          }
+        }
+      }
+      log("====一绑多执行完毕====");
+    }
+
+    // ========== 串联绑定 ==========
+    async function runChainBind() {
+      await initProvider();
+      if (parsedWallets.length === 0) { log("❌请先解析私钥"); return; }
+      const rootParent = document.getElementById("chainRootParent").value.trim();
+      if (!ethers.utils.isAddress(rootParent)) { log("❌根上级地址非法"); return; }
+      let bindFeeWei;
+      try { bindFeeWei = await familyContract.bindFee(); } catch (e) { log(`❌读取bindFee失败 ${e.message}`); return; }
+      const gasOv = await buildTxOverrides();
+      log(`====开始串联绑定 bindFee=${bindFeeWei.toString()} gasLimit=${gasOv.gasLimit || '自动估算'} ====`);
+      let prevAddr = rootParent;
+
+      for (let idx = 0; idx < parsedWallets.length; idx++) {
+        const wallet = parsedWallets[idx];
+        const targetParent = prevAddr;
+        const c = familyContract.connect(wallet);
+        const label = `[chain‑${idx}] ${wallet.address}`;
+        const ok = await precheckBalance(
+          wallet,
+          bindFeeWei,
+          gasOv,
+          () => c.estimateGas.makeRelation(targetParent, { value: bindFeeWei }),
+          label + " makeRelation"
+        );
+        if (!ok) continue;
+        try {
+          log(`${label} → parent ${targetParent}`);
+          const tx = await c.makeRelation(targetParent, { value: bindFeeWei, ...gasOv });
+          log(`👉txHash:${tx.hash}`);
+          await tx.wait();
+          log(`✅确认`);
+          prevAddr = wallet.address;
+        } catch (e) {
+          log(`❌${label} err:${e.message}`);
+          try {
+            await c.callStatic.makeRelation(targetParent, { value: bindFeeWei });
+          } catch (se) {
+            log(`🔍静态调用 revert 原因: ${se.reason || se.error?.reason || se.message}`);
+          }
+        }
+      }
+      log("====串联绑定结束====");
+    }
+
+   // ====================== 批量转账 ======================
+    const tokenMetaCache = {};
+
+    function onTransferTypeChange() {
+      const type = document.querySelector('input[name="transferType"]:checked').value;
+      document.getElementById("tokenAddrWrap").style.display = type === "token" ? "block" : "none";
+      refreshTransferBalances();
+    }
+
+    async function getTokenMeta(tokenAddr) {
+      const key = tokenAddr.toLowerCase();
+      if (tokenMetaCache[key]) return tokenMetaCache[key];
+      const c = new ethers.Contract(tokenAddr, [
+        {inputs: [], name: "decimals", outputs: [{type: "uint8"}], stateMutability: "view", type: "function"},
+        {inputs: [], name: "symbol", outputs: [{type: "string"}], stateMutability: "view", type: "function"}
+      ], provider);
+      let decimals = 18, symbol = "TOKEN";
+      try {decimals = await c.decimals();} catch (e) {log(`⚠️读取decimals失败，按18处理：${e.message}`);}
+      try {symbol = await c.symbol();} catch (e) { }
+      tokenMetaCache[key] = {decimals, symbol};
+      return tokenMetaCache[key];
+    }
+
+    function clearTransferBalances() {
+      document.getElementById("transferBalanceOut").innerText = "";
+    }
+
+    // 解析出款私钥
+    function parseTransferFromWallets() {
+      const text = document.getElementById("transferFromSk").value;
+      const lines = text.split('\n').map(s => s.trim()).filter(s => s.length > 0);
+      const wallets = [];
+      for (const line of lines) {
+        let sk = line;
+        if (!sk.startsWith('0x')) sk = '0x' + sk;
+        try {
+          wallets.push(new ethers.Wallet(sk, provider));
+        } catch (e) {
+          const masked = line.length > 10 ? line.slice(0, 6) + "..." + line.slice(-4) : "***";
+          log(`❌出款私钥无效:${masked} | ${e.message}`);
+        }
+      }
+      return wallets;
+    }
+
+    async function refreshTransferBalances() {
+      await initProvider();
+      const out = document.getElementById("transferBalanceOut");
+      document.getElementById("transferRecvCount").innerText = parsedWallets.length;
+
+      const fromWallets = parseTransferFromWallets();
+      if (fromWallets.length === 0) {out.innerText = "❌ 请输入有效的出款私钥"; return;}
+
+      const type = document.querySelector('input[name="transferType"]:checked').value;
+      const lines = [];
+
+      if (type === "native") {
+        for (let i = 0; i < fromWallets.length; i++) {
+          const w = fromWallets[i];
+          try {
+            const bal = await provider.getBalance(w.address);
+            lines.push(`[${i}] ${w.address} | ${ethers.utils.formatEther(bal)} BNB`);
+          } catch (e) {
+            lines.push(`[${i}] ${w.address} | 查询失败:${e.message}`);
+          }
+        }
+      } else {
+        const tokenAddr = document.getElementById("transferTokenAddr").value.trim();
+        if (!ethers.utils.isAddress(tokenAddr)) {out.innerText = "❌ 代币地址非法"; return;}
+        const meta = await getTokenMeta(tokenAddr);
+        const c = new ethers.Contract(tokenAddr, [
+          {inputs: [{internalType: "address", name: "account", type: "address"}], name: "balanceOf", outputs: [{type: "uint256"}], stateMutability: "view", type: "function"}
+        ], provider);
+        for (let i = 0; i < fromWallets.length; i++) {
+          const w = fromWallets[i];
+          try {
+            const bal = await c.balanceOf(w.address);
+            lines.push(`[${i}] ${w.address} | ${ethers.utils.formatUnits(bal, meta.decimals)} ${meta.symbol}`);
+          } catch (e) {
+            lines.push(`[${i}] ${w.address} | 查询失败:${e.message}`);
+          }
+        }
+      }
+      out.innerText = lines.join("\n");
+    }
+
+    async function runBatchTransfer() {
+      await initProvider();
+      if (parsedWallets.length === 0) {log("❌请先在上方「私钥列表」解析接收地址"); return;}
+
+      const fromWallets = parseTransferFromWallets();
+      if (fromWallets.length === 0) {log("❌请输入有效的出款私钥"); return;}
+
+      const amtStr = document.getElementById("transferAmount").value.trim();
+      if (!amtStr || isNaN(Number(amtStr)) || Number(amtStr) <= 0) {log("❌请输入正确的转出数量"); return;}
+
+      const type = document.querySelector('input[name="transferType"]:checked').value;
+      let meta = null, tokenContract = null;
+      if (type === "token") {
+        const tokenAddr = document.getElementById("transferTokenAddr").value.trim();
+        if (!ethers.utils.isAddress(tokenAddr)) {log("❌代币地址非法"); return;}
+        meta = await getTokenMeta(tokenAddr);
+        tokenContract = new ethers.Contract(tokenAddr, [
+          {inputs: [{internalType: "address", name: "to", type: "address"}, {internalType: "uint256", name: "amount", type: "uint256"}], name: "transfer", outputs: [{type: "bool"}], stateMutability: "nonpayable", type: "function"}
+        ], provider);
+      }
+
+      const gasOv = await buildTxOverrides();
+      const amountWei = type === "native"
+        ? ethers.utils.parseEther(amtStr)
+        : ethers.utils.parseUnits(amtStr, meta.decimals);
+
+      const receivers = parsedWallets.map(w => w.address);
+      const totalTx = fromWallets.length * receivers.length;
+
+      log(`====批量转账 type=${type} 数量=${amtStr} 出款账号=${fromWallets.length} 接收地址=${receivers.length} 总笔数=${totalTx} gasLimit=${gasOv.gasLimit || '自动估算'} ====`);
+      log(`⚠️ 每笔转账都会消耗 gas，请确认出款账号余额充足`);
+
+      let okCount = 0, failCount = 0, skipCount = 0;
+
+      for (let fi = 0; fi < fromWallets.length; fi++) {
+        const wallet = fromWallets[fi];
+        log(`---- 出款账号[${fi}] ${wallet.address} 开始 ----`);
+
+        for (let ri = 0; ri < receivers.length; ri++) {
+          const toAddr = receivers[ri];
+          const label = `[${fi}→${ri}] ${wallet.address.slice(0, 6)}…→${toAddr.slice(0, 6)}…`;
+          try {
+            if (type === "native") {
+              const ok = await precheckBalance(
+                wallet, amountWei, gasOv,
+                () => provider.estimateGas({from: wallet.address, to: toAddr, value: amountWei, gasPrice: gasOv.gasPrice}),
+                label + " 主币转账"
+              );
+              if (!ok) {skipCount++; continue;}
+
+              log(`${label} 转出 ${amtStr} BNB`);
+              const tx = await wallet.sendTransaction({to: toAddr, value: amountWei, ...gasOv});
+              log(`👉txHash:${tx.hash}`);
+              await tx.wait();
+              log(`✅确认`);
+              okCount++;
+            } else {
+              const c = tokenContract.connect(wallet);
+              const ok = await precheckBalance(
+                wallet, 0, gasOv,
+                () => c.estimateGas.transfer(toAddr, amountWei),
+                label + " 代币转账"
+              );
+              if (!ok) {skipCount++; continue;}
+
+              log(`${label} 转出 ${amtStr} ${meta.symbol}`);
+              const tx = await c.transfer(toAddr, amountWei, gasOv);
+              log(`👉txHash:${tx.hash}`);
+              await tx.wait();
+              log(`✅确认`);
+              okCount++;
+            }
+          } catch (e) {
+            failCount++;
+            log(`❌${label} 转账失败 ${e.message}`);
+          }
+        }
+      }
+
+      log(`====批量转账结束：成功 ${okCount}，失败 ${failCount}，跳过(余额不足) ${skipCount} ====`);
+      refreshTransferBalances();
+    }
+
+    // ====================== 批量生成地址 ======================
+    // ====================== 批量生成地址 ======================
+    let generatedWallets = []; // {address, privateKey}
+
+    function clearGenerated() {
+      generatedWallets = [];
+      document.getElementById("genOut").innerText = "";
+    }
+
+    function runGenerateWallets() {
+      const nStr = document.getElementById("genCount").value.trim();
+      const n = Number(nStr);
+      if (!Number.isInteger(n) || n <= 0 || n > 2000) {
+        log("❌生成数量需为 1~2000 的整数");
+        return;
+      }
+      generatedWallets = [];
+      const lines = [];
+      for (let i = 0; i < n; i++) {
+        const w = ethers.Wallet.createRandom();
+        generatedWallets.push({address: w.address, privateKey: w.privateKey});
+        lines.push(`[${i}] ${w.address}  ${w.privateKey}`);
+      }
+      document.getElementById("genOut").innerText = lines.join("\n");
+      log(`✅已生成 ${n} 个地址（仅内存，刷新丢失，请导出 xlsx）`);
+    }
+
+    function exportWalletsXlsx() {
+      if (generatedWallets.length === 0) {log("❌请先生成地址"); return;}
+      if (typeof XLSX === "undefined") {log("❌未加载 SheetJS，请检查 xlsx CDN"); return;}
+      const rows = generatedWallets.map((w, i) => ({序号: i, 地址: w.address, 私钥: w.privateKey}));
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "wallets");
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      XLSX.writeFile(wb, `wallets_${ts}.xlsx`);
+      log(`✅已导出 ${generatedWallets.length} 个地址到 xlsx`);
+    }
+
+    // 页面加载初始化转账区
+    onTransferTypeChange();
+
+    // ========== 批量CTC挂单 ==========
+    async function batchCtcCreateOrder() {
+      await initProvider();
+      if (parsedWallets.length === 0) { log("❌请解析私钥"); return; }
+      const amtStr = document.getElementById("ctcAmount").value.trim();
+      const priceStr = document.getElementById("ctcPrice").value.trim();
+      const isBuy = (document.getElementById("ctcIsBuy").value === "true");
+      if (!amtStr || !priceStr) { log("❌请填写数量、价格"); return; }
+
+      const amount = ethers.utils.parseEther(amtStr);
+      const price = ethers.BigNumber.from(priceStr);
+      const amountHuman = Number(amtStr);
+      if (amountHuman < 100 || (amountHuman % 10 !== 0)) {
+        log(`❌挂单数量校验失败！要求>=100并且是10的整数倍，输入${amountHuman}`);
+        return;
+      }
+
+      let protocolFeeWei;
+      try {
+        protocolFeeWei = await marketContract.protocolAmount();
+      } catch (err) {
+        log(`❌读取Market挂单protocolAmount失败：${err.message}`);
+        return;
+      }
+
+      const gasOv = await buildTxOverrides();
+      log(`====批量CTC挂单 isBuy=${isBuy}, amount=${amount.toString()}, price=${price.toString()}, 挂单费=${protocolFeeWei.toString()}, gasLimit=${gasOv.gasLimit || '自动估算'} ====`);
+      for (let idx = 0; idx < parsedWallets.length; idx++) {
+        const wallet = parsedWallets[idx];
+        const label = `[${idx}] ${wallet.address}`;
+        try {
+          if (isBuy) {
+            const usdtSigner = usdtTokenContract.connect(wallet);
+            const okApprove = await precheckBalance(
+              wallet, 0, gasOv,
+              () => usdtSigner.estimateGas.approve(ADDR.Market, amount),
+              label + " USDT approve"
+            );
+            if (!okApprove) continue;
+            log(`${label}【买单】授权USDT → Market`);
+            const approveTx = await usdtSigner.approve(ADDR.Market, amount, gasOv);
+            await approveTx.wait();
+            log(`✅USDT approve完成 hash:${approveTx.hash}`);
+          } else {
+            const caaSigner = caaTokenContract.connect(wallet);
+            const okApprove = await precheckBalance(
+              wallet, 0, gasOv,
+              () => caaSigner.estimateGas.approve(ADDR.Market, amount),
+              label + " CAA approve"
+            );
+            if (!okApprove) continue;
+            log(`${label}【卖单】授权CAA → Market`);
+            const approveTx = await caaSigner.approve(ADDR.Market, amount, gasOv);
+            await approveTx.wait();
+            log(`✅CAA approve完成 hash:${approveTx.hash}`);
+          }
+
+          const c = marketContract.connect(wallet);
+          const okOrder = await precheckBalance(
+            wallet, protocolFeeWei, gasOv,
+            () => c.estimateGas.createOrder(amount, price, isBuy, { value: protocolFeeWei }),
+            label + " createOrder"
+          );
+          if (!okOrder) continue;
+          log(`${label} 发起createOrder`);
+          const tx = await c.createOrder(amount, price, isBuy, { value: protocolFeeWei, ...gasOv });
+          log(`👉txHash:${tx.hash}等待确认`);
+          const rcpt = await tx.wait();
+          log(`✅挂单成功 block:${rcpt.blockNumber}`);
+        } catch (e) {
+          log(`❌${label} 挂单失败 ${e.message}`);
+        }
+      }
+      log("====批量CTC挂单全部执行完毕====");
+    }
+
+    // ========== 批量 CAA→V 兑换 ==========
+    async function batchTokenSwap() {
+      await initProvider();
+      if (parsedWallets.length === 0) { log("❌请解析私钥"); return; }
+      const amtStr = document.getElementById("swapAmount").value.trim();
+      if (!amtStr) { log("❌请输入兑换代币数量"); return; }
+      const swapAmount = ethers.utils.parseEther(amtStr);
+      const gasOv = await buildTxOverrides();
+      log(`====批量兑换 CAA→V‑Token amount=${swapAmount.toString()}, gasLimit=${gasOv.gasLimit || '自动估算'} ====`);
+
+      for (let idx = 0; idx < parsedWallets.length; idx++) {
+        const wallet = parsedWallets[idx];
+        const label = `[${idx}] ${wallet.address}`;
+        try {
+          const tokenWithSigner = caaTokenContract.connect(wallet);
+          const okApprove = await precheckBalance(
+            wallet, 0, gasOv,
+            () => tokenWithSigner.estimateGas.approve(ADDR.VExchange, swapAmount),
+            label + " CAA approve"
+          );
+          if (!okApprove) continue;
+          log(`${label} approve CAA → VExchange`);
+          const approveTx = await tokenWithSigner.approve(ADDR.VExchange, swapAmount, gasOv);
+          await approveTx.wait();
+          log(`✅CAA approve完成 hash:${approveTx.hash}`);
+
+          const vExWithSigner = vExchangeContract.connect(wallet);
+          const okSwap = await precheckBalance(
+            wallet, 0, gasOv,
+            () => vExWithSigner.estimateGas.swapToken(swapAmount),
+            label + " swapToken"
+          );
+          if (!okSwap) continue;
+          const tx = await vExWithSigner.swapToken(swapAmount, gasOv);
+          log(`👉兑换txHash:${tx.hash}等待确认`);
+          await tx.wait();
+          log(`✅CAA→V‑Token兑换完成 ${wallet.address}`);
+        } catch (e) {
+          log(`❌${label}兑换异常 ${e.message}`);
+        }
+      }
+      log("====批量CAA→V兑换执行结束====");
+    }
+
+    // ========== 批量查询静态奖励 ==========
+    async function batchQueryStaticReward() {
+      await initProvider();
+      if (parsedWallets.length === 0) { log("❌请解析私钥"); return; }
+      let out = "地址 | 待领取静态奖励(wei)\n";
+      document.getElementById("staticQueryOut").innerText = out;
+      log(`====批量查询静态奖励====`);
+      for (const w of parsedWallets) {
+        try {
+          const val = await staticPoolContract.earn(w.address);
+          const line = `${w.address} | ${val.toString()}`;
+          out += line + "\n";
+          log(line);
+        } catch (e) {
+          const line = `${w.address} | 查询失败:${e.message}`;
+          out += line + "\n";
+          log(line);
+        }
+      }
+      document.getElementById("staticQueryOut").innerText = out;
+      log(`====查询完成====`);
+    }
+
+    // ========== 批量领取静态奖励 ==========
+    async function batchClaimStaticReward() {
+      await initProvider();
+      if (parsedWallets.length === 0) { log("❌请解析私钥"); return; }
+      const gasOv = await buildTxOverrides();
+      log(`====批量领取静态奖励 harvest(), gasLimit=${gasOv.gasLimit || '自动估算'} ====`);
+      for (let idx = 0; idx < parsedWallets.length; idx++) {
+        const wallet = parsedWallets[idx];
+        const c = staticPoolContract.connect(wallet);
+        const label = `[${idx}] ${wallet.address}`;
+        const ok = await precheckBalance(
+          wallet, 0, gasOv,
+          () => c.estimateGas.harvest(),
+          label + " harvest"
+        );
+        if (!ok) continue;
+        try {
+          log(`${label} 调用harvest`);
+          const tx = await c.harvest(gasOv);
+          log(`👉txHash:${tx.hash}等待确认`);
+          await tx.wait();
+          log(`✅领取确认`);
+        } catch (e) {
+          log(`❌${label}领取失败 ${e.message}`);
+        }
+      }
+      log("====批量领取静态奖励执行完毕====");
+    }
+
+    // ========== 批量领取动态奖励 ==========
+    async function batchClaimDynamicReward() {
+      await initProvider();
+      if (parsedWallets.length === 0) { log("❌请解析私钥"); return; }
+      const totalRewardStr = document.getElementById("dynTotalReward").value.trim();
+      const useCycleStr = document.getElementById("dynUseCycle").value.trim();
+      const proofJsonText = document.getElementById("dynProofJson").value.trim();
+      if (!totalRewardStr || !useCycleStr || !proofJsonText) {
+        log("❌请填入totalReward、useCycle、merkleProof的JSON数组");
+        return;
+      }
+      let proofArr;
+      try {
+        proofArr = JSON.parse(proofJsonText);
+      } catch (err) {
+        log(`❌merkleProof JSON解析失败 ${err.message}`);
+        return;
+      }
+      const totalReward = ethers.BigNumber.from(totalRewardStr);
+      const useCycle = ethers.BigNumber.from(useCycleStr);
+      const gasOv = await buildTxOverrides();
+      log(`====批量takeAward totalReward=${totalReward.toString()}, cycle=${useCycle.toString()}, gasLimit=${gasOv.gasLimit || '自动估算'} ====`);
+      for (let idx = 0; idx < parsedWallets.length; idx++) {
+        const wallet = parsedWallets[idx];
+        const c = dynamicPoolContract.connect(wallet);
+        const label = `[${idx}] ${wallet.address}`;
+        const ok = await precheckBalance(
+          wallet, 0, gasOv,
+          () => c.estimateGas.takeAward(proofArr, totalReward, useCycle),
+          label + " takeAward"
+        );
+        if (!ok) continue;
+        try {
+          log(`${label} takeAward`);
+          const tx = await c.takeAward(proofArr, totalReward, useCycle, gasOv);
+          log(`👉txHash:${tx.hash}等待确认`);
+          await tx.wait();
+          log(`✅动态奖励领取确认`);
+        } catch (e) {
+          log(`❌${label}动态领取失败 ${e.message}`);
+        }
+      }
+      log("====批量动态奖励领取执行完毕====");
+    }
+
+    function log(msg) {
+      const box = document.getElementById("logBox");
+      const t = new Date().toLocaleTimeString();
+      box.innerText += `[${t}] ${msg}\n`;
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function clearLog() {
+      document.getElementById("logBox").innerText = "";
+      const sq = document.getElementById("staticQueryOut");
+      if (sq) sq.innerText = "";
+    }
+
+    // 页面加载时显示默认 RPC
+    document.getElementById("rpcDefaultShow").innerText = DEFAULT_RPC_URL;
+    document.getElementById("rpcUrl").value = DEFAULT_RPC_URL;
+    // Gas Limit 默认留空 → 由 ethers 自动 eth_estimateGas
+    document.getElementById("gasLimit").value = "";
+  </script>
+</body>
+
+</html>
